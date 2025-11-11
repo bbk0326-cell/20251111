@@ -35,6 +35,9 @@ def initialize_session():
 
 # 세션 상태 초기화 함수 실행
 initialize_session()
+
+# 편의를 위해 DataFrame 변수를 세션 상태에 연결
+# *주의: 함수 내에서 수정 시 st.session_state.inventory_df에 다시 할당해야 함*
 df_inventory = st.session_state.inventory_df
 df_history = st.session_state.loan_history_df
 
@@ -49,7 +52,54 @@ st.title("🔬 과학 실험 도구 대여 시스템")
 st.markdown("도구의 재고 현황을 확인하고, 대여 및 반납 기록을 관리할 수 있습니다.")
 st.markdown("---")
 
-# --- 3. 대여/반납 로직 함수 ---
+# --- 3. 재고 관리 로직 함수 (추가/수정) ---
+
+def add_new_equipment(name, stock):
+    """새로운 도구를 재고 목록에 추가합니다."""
+    # 도구 ID 자동 할당 (현재 최대 ID + 1)
+    new_id = df_inventory['도구ID'].max() + 1 if not df_inventory.empty else 101
+    
+    new_data = pd.DataFrame([{
+        "도구ID": new_id,
+        "도구명": name,
+        "총 재고": stock,
+        "대여 중": 0,
+        "잔여 개수": stock
+    }])
+    
+    # 세션 상태 업데이트
+    st.session_state.inventory_df = pd.concat(
+        [df_inventory, new_data],
+        ignore_index=True
+    )
+    st.success(f"✅ 새 도구 **ID {new_id} - {name}** (총 재고: {stock}개)가 추가되었습니다.")
+
+def modify_equipment_stock(tool_id, new_total_stock):
+    """기존 도구의 총 재고 수량을 수정합니다."""
+    tool_idx = df_inventory[df_inventory['도구ID'] == tool_id].index
+    
+    if not tool_idx.empty:
+        idx = tool_idx[0]
+        tool_name = df_inventory.loc[idx, '도구명']
+        loaned_count = df_inventory.loc[idx, '대여 중']
+        
+        # 유효성 검사: 새 재고는 현재 대여 중인 개수보다 적을 수 없음
+        if new_total_stock < loaned_count:
+            st.error(f"❌ 총 재고는 현재 대여 중인 개수({loaned_count}개)보다 적을 수 없습니다.")
+            return
+
+        # 업데이트
+        df_inventory.loc[idx, '총 재고'] = new_total_stock
+        df_inventory.loc[idx, '잔여 개수'] = new_total_stock - loaned_count
+        
+        # 세션 상태 업데이트
+        st.session_state.inventory_df = df_inventory
+        
+        st.success(f"✅ **{tool_name}**의 총 재고가 **{new_total_stock}개**로 수정되었습니다.")
+    else:
+        st.error(f"❌ 도구 ID **{tool_id}**를 찾을 수 없습니다.")
+
+# --- 4. 대여/반납 로직 함수 (기존) ---
 
 def loan_equipment(tool_id, borrower_name, due_days=7):
     """도구를 대여하고 재고 및 기록을 업데이트합니다."""
@@ -104,125 +154,4 @@ def return_equipment(record_index):
         
         st.success(f"✅ **{tool_name}**가 정상적으로 반납 처리되었습니다. ({borrower}님)")
     else:
-        st.error("❌ 해당 대여 기록을 찾을 수 없거나 이미 반납된 상태입니다.")
-
-# --- 4. UI 탭 구성 ---
-tab1, tab2 = st.tabs(["📊 재고 현황", "📚 대여/반납 기록"])
-
-with tab1:
-    st.header("재고 및 잔여 개수 확인")
-    st.info("현재 각 도구의 **총 재고**와 **대여 가능한 잔여 개수**를 확인할 수 있습니다.")
-    
-    # 데이터프레임 표시
-    st.dataframe(
-        df_inventory.sort_values(by='도구ID'),
-        hide_index=True,
-        column_config={
-            "도구ID": st.column_config.NumberColumn("ID", width="small"),
-            "도구명": st.column_config.TextColumn("도구명", width="large"),
-            "총 재고": st.column_config.NumberColumn("총 재고", format="%d 개"),
-            "대여 중": st.column_config.NumberColumn("대여 중", format="%d 개"),
-            "잔여 개수": st.column_config.NumberColumn("잔여 개수 (대여 가능)", format="%d 개"),
-        }
-    )
-    
-    st.markdown("---")
-    
-    st.subheader("새로운 도구 대여 신청")
-    with st.form("loan_form"):
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            tool_id_list = df_inventory['도구ID'].tolist()
-            tool_id_selection = st.selectbox(
-                "대여할 도구 (ID)",
-                options=tool_id_list,
-                format_func=lambda x: f"ID {x} - {df_inventory[df_inventory['도구ID'] == x]['도구명'].iloc[0]}"
-            )
-        
-        with col2:
-            borrower_name = st.text_input("대여자 이름/학과", placeholder="예: 김철수, 화학과")
-        
-        submitted = st.form_submit_button("대여 처리")
-        
-        if submitted and tool_id_selection and borrower_name:
-            loan_equipment(tool_id_selection, borrower_name)
-
-with tab2:
-    st.header("대여 및 반납 기록")
-    
-    # '대여 중'인 기록 필터링
-    active_loans = df_history[df_history['상태'] == '대여 중'].sort_values(by='반납 예정일')
-    
-    st.subheader("🔴 현재 대여 중인 도구 목록")
-    if not active_loans.empty:
-        
-        # 도구명 조인을 위한 임시 병합
-        display_active_loans = active_loans.merge(
-            df_inventory[['도구ID', '도구명']], 
-            on='도구ID', 
-            how='left'
-        )
-        display_active_loans = display_active_loans.rename(columns={'도구명': '도구'})
-        
-        # 반납 처리 선택을 위한 체크박스
-        st.markdown("---")
-        st.caption("반납할 기록을 선택하고 아래 '반납 처리' 버튼을 누르세요.")
-        
-        # 반납 처리 폼
-        with st.form("return_form"):
-            return_indices = []
-            
-            # 기록을 테이블로 표시하고 반납 체크박스 추가
-            for index, row in display_active_loans.iterrows():
-                col_check, col_id, col_name, col_borrower, col_due = st.columns([0.5, 0.5, 2, 1.5, 1.5])
-                
-                with col_check:
-                    if st.checkbox("", key=f"return_check_{index}"):
-                        return_indices.append(index)
-                
-                with col_id:
-                    st.text(row['도구ID'])
-                with col_name:
-                    st.text(row['도구'])
-                with col_borrower:
-                    st.text(row['대여자'])
-                with col_due:
-                    st.text(row['반납 예정일'].strftime('%Y-%m-%d'))
-                    
-            return_submitted = st.form_submit_button("선택 항목 반납 처리")
-            
-            if return_submitted and return_indices:
-                for index in return_indices:
-                    return_equipment(index)
-                # 반납 후 폼을 다시 로드하여 상태 업데이트
-                st.rerun() 
-            elif return_submitted and not return_indices:
-                st.warning("반납할 항목을 선택해주세요.")
-
-    else:
-        st.info("현재 대여 중인 도구가 없습니다.")
-        
-    st.markdown("---")
-    
-    st.subheader("📚 전체 대여 기록 (최근 10건)")
-    # 모든 기록 표시 (최신순 10건)
-    display_all_history = df_history.sort_values(by='대여일', ascending=False).head(10).merge(
-        df_inventory[['도구ID', '도구명']], 
-        on='도구ID', 
-        how='left'
-    ).rename(columns={'도구명': '도구'})
-    
-    st.dataframe(
-        display_all_history,
-        hide_index=True,
-        column_order=["도구ID", "도구", "대여자", "대여일", "반납 예정일", "상태"],
-        column_config={
-            "도구ID": st.column_config.NumberColumn("ID", width="small"),
-            "도구": st.column_config.TextColumn("도구명", width="large"),
-            "대여자": st.column_config.TextColumn("대여자", width="medium"),
-            "대여일": st.column_config.DateColumn("대여일", format="YYYY-MM-DD"),
-            "반납 예정일": st.column_config.DateColumn("반납 예정일", format="YYYY-MM-DD"),
-            "상태": st.column_config.TextColumn("상태", width="small"),
-        }
-    )
+        st.error
